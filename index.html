@@ -699,8 +699,12 @@ const Snd = (() => {
       }
     }
   }
+  function ensureAudioRunning(){ // (kyle 2026-10-14): resume a suspended AudioContext (browser autoplay policy / tab switch) — music must work on every start path.
+    if (ctx && ctx.state === 'suspended' && ctx.resume){ try { ctx.resume(); } catch(e){} }
+  }
   function musicStart(id) {
     if (!ctx || muted) { musicCurrent = id; return; }
+    ensureAudioRunning();
     musicStopTimer();
     pendingPiece = null;
     schedPiece = id; schedBar = 0; schedStep = 0; schedNext = ctx.currentTime + 0.06;
@@ -718,6 +722,7 @@ const Snd = (() => {
   }
   function musicAuto(state, bossActive, terrainId, bossId) {
     if (!ctx || muted) return;
+    ensureAudioRunning();
     let want = null;
     if (state === 0) want = 'menu';
     else if (state === 1) want = resolveLoopPiece(!!bossActive, terrainId, bossId);
@@ -799,7 +804,7 @@ const MAXZ = 10, MAXB = 24, GOLD_TARGET = 3;
 const GUN_UP = 0.25, BAN_SPEED = 0.75; // pea at 20% (kyle) // 75% slower (kyle)
 // charge-up: 3s (180 frames), 1.5s (90 frames) at level 15+ (kyle)
 function getChargeFrames(){ return wave>=15 ? 90 : 180; }
-let PLAY = {x0:24, y0:HUD_H+16, x1:616, y1:456};
+let PLAY = {x0:24, y0:16, x1:616, y1:H-HUD_H-16}; // (kyle 2026-10-14): BOTTOM HUD — arena shifts up, ends above the bottom bar.
 const PICKUP_RADIUS = 26; // FIXED item pickup radius (kyle: never changed by items/skills/equipment - not an upgrade)
 // ---- v13: 30 LEVELS, 7 THEMED MAPS, A BOSS IN EVERY LEVEL ----
 // Each map is identifiably different in 4 ways: looks, buffs/debuffs, barriers, design.
@@ -844,6 +849,7 @@ const LORE_SCENES = [
 let worldW = 960, worldH = 720, camx = 0, camy = 0;
 let levelMap = MAPS[0], mapOrder = [], bossOrderRun = [];
 let bossPt = null, bossSpawned = false, bossKilled = false, doorPt = null, levelBossId = null, levelBossCycle = 0; // kyle: bossKilled gates lootPhase (must kill boss to progress)
+let doorSpawnFrame = -99999, doorCharge = 0; // (kyle 2026-10-14): door grace + stand-still charge.
 let bossPtRevealed = false; // Boss spawn point revealed at 30s (15s before 45s spawn) (kyle)
 let decor = [];
 function shuffle(a){ for (let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
@@ -884,6 +890,11 @@ function genLevel0(){
   // Loop: LORE -> MAP -> SPRITE LIST -> GAMEPLAY (tutorial) -> VENDOR -> LEVEL 1
   levelStartFrame = frame;
   wave = 0;
+  { // (kyle 2026-10-14): random starting tutorial skill — never fixed ice/fire.
+    const d = DROPS[Math.floor(Math.random()*DROPS.length)]; tutorialStartSkill = d.id;
+    let o; do { o = DROPS[Math.floor(Math.random()*DROPS.length)]; } while (o.id === tutorialStartSkill);
+    tutorialOtherSkill = o.id;
+  }
   zombies.length = 0; waveQueue.length = 0; pickups.length = 0;
   // Use Training Ground map (first map)
   if (mapOrder.length===0) mapOrder = [0,1,2,3,4,5,6];
@@ -1077,9 +1088,9 @@ function genLevel(lv){
   // No banner - map intro IS the level introduction (kyle: banner blocked item view)
   // Map FX as banner (no freeze frame) - teach while playing
   if (M.fx && M.fx.length && !seenList('ps_seen_fx').includes(M.id)){ showBanner('MAP EFFECTS: '+M.fx.join(', '), M.name+' has special effects!', '#ffe14d'); markSeen('ps_seen_fx', M.id); }
-  const sc = [1.5, 2.0, 2.5][tier];
+  const sc = lv > 15 ? 3.0 : [1.5, 2.0, 2.5][tier]; // (kyle 2026-10-14): Wave 16+ maps ~2x the Wave 1-10 size (1920x1440).
   worldW = Math.round(640*sc); worldH = Math.round(480*sc);
-  PLAY = {x0:24, y0:HUD_H+16, x1:worldW-24, y1:worldH-24};
+  PLAY = {x0:24, y0:16, x1:worldW-24, y1:worldH-HUD_H-16}; // (kyle 2026-10-14): BOTTOM HUD — arena shifts up, ends above the bottom bar.
   // player spawn + boss point: opposite corners, guaranteed far apart
   const corners = [
     {x:PLAY.x0+80, y:PLAY.y0+80}, {x:PLAY.x1-80, y:PLAY.y0+80},
@@ -1106,6 +1117,25 @@ function genLevel(lv){
       slowZones.push({x:PLAY.x0+80+Math.random()*(worldW-160), y:PLAY.y0+80+Math.random()*(worldH-160), r:70, t:999999});
     if (M.storm) for (let i=0;i<3;i++)
       stormZones.push({x:PLAY.x0+80+Math.random()*(worldW-160), y:PLAY.y0+80+Math.random()*(worldH-160), r:55, t:999999});
+    // TERRAIN-THEMED ZONES (kyle 2026-10-14): every terrain gets its own hazards (was: only marsh + storm).
+    const zoneAt = (arr, r) => arr.push({x:PLAY.x0+80+Math.random()*(worldW-160), y:PLAY.y0+80+Math.random()*(worldH-160), r:r, t:999999});
+    if (M.id==='dessert') for (let i=0;i<3;i++) zoneAt(slowZones, 70); // sticky cake pools
+    else if (M.id==='frost') for (let i=0;i<3;i++) zoneAt(slowZones, 70); // ice slicks
+    else if (M.id==='thorn') for (let i=0;i<3;i++) zoneAt(slowZones, 70); // bramble tangles
+    else if (M.id==='void') for (let i=0;i<2;i++) zoneAt(burnZones, 60); // void fire
+    else if (M.id==='meadow') for (let i=0;i<2;i++) zoneAt(slowZones, 60); // mud patches
+    // WALLS (kyle 2026-10-14): 2 wall formations (4 rift rings, 1 gap) — force navigation, find the gap. Walls are short + gapped: never seal a region.
+    for (let w=0; w<2; w++){
+      const horiz = Math.random() < 0.5;
+      const wx = PLAY.x0+150+Math.random()*(worldW-300), wy = PLAY.y0+150+Math.random()*(worldH-300);
+      const gap = Math.floor(Math.random()*4);
+      for (let i=0; i<4; i++){
+        if (i === gap) continue;
+        const cx = horiz ? wx + i*90 : wx, cy = horiz ? wy : wy + i*90;
+        if (Math.hypot(cx-px, cy-py) < 120 || Math.hypot(cx-bossPt.x, cy-bossPt.y) < 150) continue;
+        cracks.push({x:cx, y:cy, r:34+Math.random()*10, t:999999});
+      }
+    }
     // pre-level terrain intro (kyle)
     if (!seenList('ps_seen_tut').includes('terrain_'+lv)){
       terrainIntro = { map: M, barriers: cracks.length, slow: slowZones.length, burn: burnZones.length, storm: stormZones.length };
@@ -1126,7 +1156,7 @@ function genLevel(lv){
   levelBossId = bossOrderRun[(lv-1)%bossOrderRun.length];
   levelBossCycle = Math.floor((lv-1)/bossOrderRun.length);
   bossName = BOSS_DEF[levelBossId].name;
-  bossSpawned = false; bossKilled = false; doorPt = null; bossPtRevealed = false; // Spawn point hidden until 30s (kyle)
+  bossSpawned = false; bossKilled = false; doorPt = null; bossPtRevealed = false; doorSpawnFrame = -99999; doorCharge = 0; // Spawn point hidden until 30s (kyle)
   zombies = []; bananas = []; shots = []; pickups = [];
   lootPhase = null; // reset loot phase for new level
   explosions = []; patches = []; telegraphs = []; summons = [];
@@ -2384,14 +2414,21 @@ const ITEMS = [
 // Permanent modifiers are balanced: capped stacks, costs scale with power (kyle).
 function rollShop(){
   shopItems = [];
-  for (let i=0;i<8;i++){
+  // (kyle 2026-10-14): dedupe by stable item id — a vendor roll NEVER shows the same skill/modifier twice.
+  // Item shapes are EXACTLY the originals (skill: cost 50, max 99, dropId; mod: cost/max/desc) — dedupe only.
+  const seen = new Set();
+  let tries = 0;
+  while (shopItems.length < 8 && tries++ < 100){
     if (Math.random() < 0.5){
       // Drop skill slot: buy a drop skill (goes into a drop-skill slot, replaces oldest if full)
       const d = DROPS[Math.floor(Math.random()*DROPS.length)];
-      shopItems.push({kind:'skill', id:'skill_'+d.id, dropId:d.id, name:d.name+' SKILL', icon:d.icon, color:d.color, cost:50, max:99, desc:d.d1});
+      const id = 'skill_' + d.id;
+      if (seen.has(id)) continue; seen.add(id);
+      shopItems.push({kind:'skill', id:id, dropId:d.id, name:d.name+' SKILL', icon:d.icon, color:d.color, cost:50, max:99, desc:d.d1});
     } else {
       // Permanent modifier slot: permanent ability until end of game (kyle)
       const it = ITEMS[Math.floor(Math.random()*ITEMS.length)];
+      if (seen.has(it.id)) continue; seen.add(it.id);
       shopItems.push({kind:'mod', id:it.id, name:it.name, icon:it.icon, color:it.color, cost:it.cost, max:it.max, desc:it.desc});
     }
   }
@@ -2403,6 +2440,8 @@ function buyShopItem(it){
   if (!it) return false;
   if (it.kind === 'skill'){
     // Set skills active: drop skills LOCKED (kyle) - don't charge, don't give
+    // (kyle 2026-10-14): at most 1 drop skill through the intro — the Level-0 vendor refuses a 2nd skill.
+    if (wave === 0 && slots.some(s => s)){ shoutF({x:320, y:200, t:60, s:'ONLY 1 DROP SKILL IN THE INTRO!', c:'#ff3333'}); return false; }
     if (activeSetSkills){ shoutF({x:320, y:200, t:60, s:'SET SKILLS ACTIVE - CANNOT BUY DROPS!', c:'#ff3333'}); return false; }
     if (gems < it.cost) return false;
     gems -= it.cost;
@@ -2768,27 +2807,27 @@ function trySignatureDrop(T){
 // 30 boss fights = 30 chances to pick up cool items (minimum). Vendor after a level sells anything EXCEPT set rarities.
 // UNIFORM: NG+0 = 3 drops (1 high slot), NG+1/NG+2 = 4 drops (1 high slot), lucky 0.10 (one more slot goes high).
 // kyle: mythic=8%, set=5% (was mythic 3%, set 1%). Rare + unique reduced to match (proportional).
-// Base: common 35%, uncommon 26%, rare 22%, unique 4%, mythic 8%, set 5%.
+// Base: common 42%, uncommon 29%, rare 12%, unique 4%, mythic 8%, set 5%. Boosted: common 39%, uncommon 27%, rare 17%, unique 4%, mythic 8%, set 5%. (Rare CUT 2026-10-14, §20.27.)
 // SLICE B: mythic + set gate is P1-ONLY and breaks at Wave 16 (gate = ngp===0 && wave<16).
 // In NG (P2/P3) the gate is LIFTED: all bosses have the FULL drop table (loot progression feel).
 function rollBossRarity(boosted){
-  // kyle: mythic=8%, set=5% (was 3%/1%). Rare + unique reduced proportionally to match (total still 100%).
+  // kyle: mythic=8%, set=5%. Rare CUT 2026-10-14 (too many rares): base 22%->12%, boosted 27%->17%; moved to common/uncommon.
   // kyle: mythic + set ONLY drop from wave-15+ bosses. Below wave 15, re-roll (no mythic/set).
   for (let tries = 0; tries < 10; tries++){
     const r = Math.random()*100;
     let out;
     if (boosted){
-      // Boosted (high slot): common 32, uncommon 24, rare 27, unique 4, mythic 8, set 5.
-      if (r < 32) out = 'common';
-      else if (r < 56) out = 'uncommon';
+      // Boosted (high slot): common 39, uncommon 27, rare 17, unique 4, mythic 8, set 5.
+      if (r < 39) out = 'common';
+      else if (r < 66) out = 'uncommon';
       else if (r < 83) out = 'rare';
       else if (r < 87) out = 'unique';
       else if (r < 95) out = 'mythic';
       else out = 'set';
     } else {
-      // Base: common 35, uncommon 26, rare 22, unique 4, mythic 8, set 5.
-      if (r < 35) out = 'common';
-      else if (r < 61) out = 'uncommon';
+      // Base: common 42, uncommon 29, rare 12, unique 4, mythic 8, set 5.
+      if (r < 42) out = 'common';
+      else if (r < 71) out = 'uncommon';
       else if (r < 83) out = 'rare';
       else if (r < 87) out = 'unique';
       else if (r < 95) out = 'mythic';
@@ -2823,7 +2862,7 @@ function rollBossLoot(bossId){
   }
   // Guarantee: at least one rare-or-better (kyle: every boss should give something cool).
   // Re-roll is WEIGHTED (kyle): rare 85%, unique 13%, mythic 2%. No set in the guarantee. No signatures.
-  if (!items.some(it=>['rare','unique','mythic','set'].includes(it.rarity))){
+  if (Math.random() < 0.5 && !items.some(it=>['rare','unique','mythic','set'].includes(it.rarity))){ // (kyle 2026-10-14): rare guarantee softened — fires only 50% of the time.
     // kyle: guarantee = rare 85% / unique 13% / mythic 2%. Below Wave 16 in P1, NO mythic (gate) - mythic -> unique.
     const gr = Math.random()*100;
     let guarRarity = gr < 85 ? 'rare' : gr < 98 ? 'unique' : 'mythic';
@@ -3301,6 +3340,7 @@ function finalPickItemX(i, n){
 }
 function finalPickItemW(n){ return n <= 4 ? 150 : n <= 6 ? 95 : 74; }
 const FINAL_PICK_CONFIRM_BTN = {x:W/2-100, y:350, w:200, h:36};
+const LOOT_CONFIRM_BTN = {x:220, y:350, w:200, h:40}; // (kyle 2026-10-14): confirm-lock — only this button closes the loot screen.
 function drawFinalPick(){
   ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
   centerText('PIP & POP DROPPED '+finalBossLoot.length+' ITEMS!', 430,'bold 22px "Courier New",monospace','#ffe14d');
@@ -3558,7 +3598,7 @@ function drawPrize(){
       ctx.strokeStyle = kept ? '#37ff8b' : (c.it.color||'#888'); ctx.lineWidth=2; ctx.strokeRect(c.x, c.y, c.w, c.h); ctx.lineWidth=1;
       drawItemArt(c.it, c.x + c.w/2, c.y + 52, 32);
       ctx.font='bold 10px "Courier New",monospace'; ctx.fillStyle=c.it.color; ctx.textBaseline='alphabetic';
-      const nm = c.it.name.toUpperCase().slice(0,20);
+      const nm = c.it.name.toUpperCase().slice(0,18);
       ctx.fillText(nm, c.x + c.w/2 - ctx.measureText(nm).width/2, c.y + 78);
       if (c.it.stars > 0){ const ss = starStr(c.it); ctx.fillStyle='#ffe14d'; ctx.fillText(ss, c.x + c.w/2 - ctx.measureText(ss).width/2, c.y + 24); }
       if (kept){ ctx.fillStyle='#37ff8b'; ctx.fillText('KEPT ✓', c.x + c.w/2 - 22, c.y + 14); }
@@ -3614,7 +3654,7 @@ function drawPrize(){
       ctx.strokeStyle='#ffe14d'; ctx.lineWidth=3; ctx.strokeRect(c.x, c.y, c.w, c.h); ctx.lineWidth=1;
       drawItemArt(c.it, c.x + c.w/2, c.y + 90, 56);
       ctx.font='bold 12px "Courier New",monospace'; ctx.fillStyle=c.it.color;
-      const nm = c.it.name.toUpperCase().slice(0,20);
+      const nm = c.it.name.toUpperCase().slice(0,18);
       ctx.fillText(nm, c.x + c.w/2 - ctx.measureText(nm).width/2, c.y + 140);
       const ss = starStr(c.it); ctx.fillStyle='#ffe14d'; ctx.font='bold 16px "Courier New",monospace';
       ctx.fillText(ss, c.x + c.w/2 - ctx.measureText(ss).width/2, c.y + 164);
@@ -3726,6 +3766,7 @@ let level0Waiting = false; // true = waiting for player to CLICK TO CONTINUE
 let monsterIntro = null; // {type, name, ...} - game paused while showing (kyle: step-by-step monster ID)
 let shakeT = 0, shakeMag = 0, hitStop = 0, combo = 0, comboT = 0, bestCombo = 0;
 let rewardItems = null, levelComplete = null, terrainIntro = null, mapIntro = null, comboIntro = null, tutorialDropId = null, tutorialDropId2 = null;
+let tutorialStartSkill = null, tutorialOtherSkill = null; // (kyle 2026-10-14): random Level-0 tutorial skills (start = taught/locked, other = combine/switch).
 let gateFlash = 0; // kyle: E - dead-click feedback timer (flashes CONFIRM button when player clicks outside it)
 let pickFly = []; // kyle: picked loot cards fly to player (Problem 2 Option 2) - {item, x, y, t}
 // pendingMapIntro already declared below (standardized loop). pendingSpriteIntro is Level 0-only.
@@ -3755,10 +3796,10 @@ function drawBanner(){
   ctx.save(); ctx.globalAlpha = a;
   ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(120, 30, 400, 60);
   ctx.strokeStyle = banner.color; ctx.lineWidth = 2; ctx.strokeRect(120, 30, 400, 60);
-  ctx.fillStyle = banner.color; ctx.font = 'bold 16px "Courier New",monospace';
+  ctx.fillStyle = banner.color; ctx.font = fitFont('bold 16px "Courier New",monospace', banner.title, 380);
   ctx.fillText(banner.title, 320 - ctx.measureText(banner.title).width/2, 55);
   if (banner.sub){
-    ctx.fillStyle = '#fff'; ctx.font = '11px "Courier New",monospace';
+    ctx.fillStyle = '#fff'; ctx.font = fitFont('11px "Courier New",monospace', banner.sub, 380);
     ctx.fillText(banner.sub, 320 - ctx.measureText(banner.sub).width/2, 75);
   }
   ctx.restore();
@@ -3768,8 +3809,8 @@ function drawBanner(){
 // NEVER better than boss loot - bosses still have the best tables.
 function rollVariantLoot(variant){
   const W = variant==='unique'
-    ? {common:5, uncommon:15, rare:35, unique:25, mythic:15, set:5}
-    : {common:20, uncommon:30, rare:30, unique:12, mythic:6, set:2};
+    ? {common:15, uncommon:20, rare:20, unique:25, mythic:15, set:5} // (kyle 2026-10-14): rare 35%->20%.
+    : {common:29, uncommon:33, rare:18, unique:12, mythic:6, set:2}; // (kyle 2026-10-14): rare 30%->18%.
   // SLICE B: P1-only Wave-16 gate (mythic/set). In NG the gate is lifted (full drop table).
   let r = weightedPick(W);
   for (let tries = 0; tries < 10 && ngp === 0 && wave < 16 && (r === 'mythic' || r === 'set'); tries++) r = weightedPick(W);
@@ -3783,7 +3824,7 @@ function rollVariantLoot(variant){
   return pick(pool);
 }
 function rollReward(){
-  const W = {common:50, uncommon:30, rare:15, unique:3, mythic:1.5, set:0.5};
+  const W = {common:56, uncommon:31, rare:8, unique:3, mythic:1.5, set:0.5}; // (kyle 2026-10-14): rare 15%->8%.
   const items = [];
   for (let i=0;i<3;i++){
     // SLICE B: P1-only Wave-16 gate (mythic/set). In NG the gate is lifted (full drop table).
@@ -3797,7 +3838,7 @@ function rollReward(){
     const pool = ITEM_POOL.filter(it=>it.rarity===r);
     if (pool.length) items.push(pick(pool));
   }
-  if (!items.some(it=>['rare','unique','mythic','set'].includes(it.rarity))){
+  if (Math.random() < 0.5 && !items.some(it=>['rare','unique','mythic','set'].includes(it.rarity))){ // (kyle 2026-10-14): rare guarantee softened — fires only 50% of the time.
     // SLICE B: guarantee pool excludes mythic below Wave 16 in P1 (gate). NG: full pool.
     const pool = ITEM_POOL.filter(it=>((ngp === 0 && wave < 16) ? ['rare','unique'] : ['rare','unique','mythic']).includes(it.rarity));
     if (pool.length) items[0] = pick(pool);
@@ -4025,7 +4066,7 @@ function spawnZombie(type, fx, fy){
 // Bosses are randomized (any boss can appear on any wave), so a Wave 1 boss must be Wave 1-tough
 // and a Wave 30 boss must be Wave 30-tough. Wave 30 = max cap (wave 31 uses wave-30 values).
 // Phases (already implemented): waves 1-14 = 1 phase, 15-30 = 2 phases (at 50% HP), 31 = 3 phases (pip/pop at 66%/33%).
-function bossHPForWave(w){ const c = Math.min(Math.max(w,1), 30); return (20 + (c-1) * 5 + (c>12 ? (c-12) * 5 : 0)) * 3; } // P3 x3 (kyle 2026-10-14, opt 1): HYBRID RAMP x3. Wave 1 = 60, Wave 12 = 225, Wave 15 = 315, Wave 30 = 765 (cap, before 0.9375 x tough). Spawned HP = this x 0.9375 x tough.
+function bossHPForWave(w){ const c = Math.min(Math.max(w,1), 30); return (20 + (c-1) * 5 + (c>12 ? (c-12) * 5 : 0)) * 8; } // P3 x8 (kyle 2026-10-14): HYBRID RAMP x8 — levels should last ~3 min (ESTIMATE, playtest-tune). Wave 1 = 160, Wave 12 = 600, Wave 15 = 840, Wave 30 = 2040 (cap, before 0.9375 x tough). Spawned HP = this x 0.9375 x tough.
 function bossProjDmg(){ const c = Math.min(Math.max(wave,1), 30); return 1 + (c-1) * 0.05 + (c>12 ? (c-12) * 0.05 : 0); } // HYBRID RAMP (kyle): Wave 1 = 1.0, Wave 12 = 1.55, Wave 30 = 3.4 (cap)
 function bossContactDmg(){ const c = Math.min(Math.max(wave,1), 30); return 1.5 + (c-1) * 0.1 + (c>12 ? (c-12) * 0.1 : 0); } // HYBRID RAMP (kyle): Wave 1 = 1.5, Wave 12 = 2.6, Wave 30 = 6.3 (cap)
 function spawnBoss(bossId, cycle, sx, sy, isLevelBoss){
@@ -5325,7 +5366,7 @@ function killZombie(z, cause){
       if (z.levelBoss){
         score += wave*50; gems += Math.round(wave*5*(levelMap?levelMap.gemsMul:1));
         lives = Math.min(maxHP(), lives+(gear.mending||0));
-        doorPt = {x:z.x, y:z.y};
+        doorPt = {x:z.x, y:z.y}; doorSpawnFrame = frame; doorCharge = 0; // (kyle 2026-10-14): door grace starts at boss death.
         shout("THE DOOR OPENS... WALK THROUGH", z.x, z.y-110, 120, '#7dff4d');
       }
       // NEW FLOW (kyle, option 1): boss kill -> pick screen DIRECTLY. No add-clear, no NEXT LEVEL click.
@@ -5333,7 +5374,7 @@ function killZombie(z, cause){
       // (leftover adds still there, door open) - clear adds OR walk to door for next level.
       // Wave 31 (final) excluded - victory flow handles it.
       if (wave !== 31){
-        levelComplete = { items: pendingBossLoot, picked: [], pickCount: pendingPickCount, isBossLoot: true };
+        levelComplete = { items: pendingBossLoot, picked: [], pickCount: pendingPickCount, isBossLoot: true, openedAt: performance.now() }; // (kyle 2026-10-14): confirm-lock — WALL-CLOCK (frame freezes while the screen is open, so a frame lockout would never expire). — clicks ignored ~1s after open.
         pendingBossLoot = null; // consumed (levelComplete holds the items)
         // Clear informational popups (combo/drop/ident/fx/talk/guide) so none can silently eat the pick click.
         // comboIntro is checked FIRST in the click handler; a leftover combo tooltip would consume the card click.
@@ -5353,7 +5394,7 @@ function killZombie(z, cause){
     // First non-boss kill in Wave 1 drops a skill (spawnPickup(null) = uniform random from 8 DROPS).
     // After that, Wave 1 adds never drop skills (dropC = 0). Hearts/currency unchanged.
     let dropC = DROP_CHANCE + 5*harm(mods.lucky) + (gear.lucky||0); // STACKING: lucky harmonic
-    if (wave === 1 && !z.boss && !wave1SkillDropped){ spawnPickup(z.x, z.y, null); wave1SkillDropped = true; dropC = 0; }
+    if (wave === 1 && !z.boss && !wave1SkillDropped && !slots.some(s => s)){ spawnPickup(z.x, z.y, null); wave1SkillDropped = true; dropC = 0; } // (kyle 2026-10-14): only if the player has NO skill yet — at most 1 drop skill through Wave 1.
     else if (wave === 1 && !z.boss){ dropC = 0; }
     // kyle: DEFAULT = currency. Unlucky 4% STALE roll drops nothing.
     const STALE_CHANCE = 4;
@@ -5648,44 +5689,53 @@ function drawSprite(pic, cx, baseY, lh, color, font){
   const w=ctx.measureText(pic[0]).width, x0=cx-w/2;
   for(let i=0;i<pic.length;i++) ctx.fillText(pic[i], x0, baseY+i*lh);
 }
+// TEXT FIT (kyle 2026-10-14): shrink oversized text to fit the screen — never overflow the 640x480 canvas.
+function fitFont(font, text, maxW){
+  const m = /(\d+)px/.exec(font); if (!m) return font;
+  let size = parseInt(m[1], 10); let f = font; ctx.font = f;
+  while (size > 8 && ctx.measureText(text).width > maxW){ size--; f = font.replace(/\d+px/, size + 'px'); ctx.font = f; }
+  return f;
+}
 function centerText(s,y,font,color){
-  ctx.font=font; ctx.fillStyle=color; ctx.textBaseline='alphabetic';
+  ctx.font = fitFont(font, s, W-24); ctx.fillStyle=color; ctx.textBaseline='alphabetic';
   ctx.fillText(s, 320-ctx.measureText(s).width/2, y);
 }
 function drawBigSlot(x, s){
+  // YELLOW LOCK (kyle 2026-10-14): right-click lock turns the drop-skill boxes yellow.
+  const LOCK_C = '#ffe14d';
   const y = 48;
   ctx.font='bold 20px "Courier New",monospace'; ctx.textBaseline='alphabetic';
   if (!s){
-    ctx.fillStyle='#3a3a3a'; ctx.fillText('[ ]', x, y);
-    ctx.font='bold 9px "Courier New",monospace'; ctx.fillStyle='#555';
-    ctx.fillText('EMPTY', x+3, y+13);
+    ctx.fillStyle = skillsLocked ? LOCK_C : '#3a3a3a'; ctx.fillText('[ ]', x, y);
+    ctx.font='bold 9px "Courier New",monospace'; ctx.fillStyle = skillsLocked ? LOCK_C : '#555';
+    ctx.fillText(skillsLocked ? 'LOCKED' : 'EMPTY', x+3, y+13);
     return 52;
   }
   // SET SKILLS: draw thematic skill slot (kyle: set skills shown in HUD slots).
   // FIX: dropById returns undefined for set skill IDs -> d.color threw, soft-locking game at map intro.
   const setSk = setSkillById(s.id);
   if (setSk){
-    ctx.fillStyle='#888'; ctx.fillText('[', x, y);
+    ctx.fillStyle = skillsLocked ? LOCK_C : '#888'; ctx.fillText('[', x, y);
     ctx.fillStyle=setSk.color; ctx.fillText(setSk.icon, x+13, y);
     const iw = ctx.measureText(setSk.icon).width;
     let cx = x+13+iw+2;
     ctx.fillStyle='#ffe14d'; ctx.fillText('★', cx, y); cx += 13;
-    ctx.fillStyle='#888'; ctx.fillText(']', cx, y);
+    ctx.fillStyle = skillsLocked ? LOCK_C : '#888'; ctx.fillText(']', cx, y);
     const w = cx - x + 16;
-    ctx.font='bold 9px "Courier New",monospace'; ctx.fillStyle=setSk.color;
+    ctx.font='bold 9px "Courier New",monospace'; ctx.fillStyle = skillsLocked ? LOCK_C : setSk.color;
     ctx.fillText(setSk.name + ' [SET]', x+2, y+13);
     return w;
   }
   const d = dropById(s.id);
   if (!d) return 52; // Safety: unknown skill id, draw empty slot
-  ctx.fillStyle='#888'; ctx.fillText('[', x, y);
+  ctx.fillStyle = skillsLocked ? LOCK_C : '#888'; ctx.fillText('[', x, y);
   ctx.fillStyle=d.color; ctx.fillText(d.icon, x+13, y);
   const iw = ctx.measureText(d.icon).width;
   let cx = x+13+iw+2;
   if (s.level===2){ ctx.fillStyle='#fff'; ctx.fillText('+', cx, y); cx += 13; }
-  ctx.fillStyle='#888'; ctx.fillText(']', cx, y);
+  ctx.fillStyle = skillsLocked ? LOCK_C : '#888'; ctx.fillText(']', cx, y);
   const w = cx - x + 16;
-  ctx.font='bold 9px "Courier New",monospace'; ctx.fillStyle=d.color;
+  ctx.font='bold 9px "Courier New",monospace'; ctx.fillStyle = skillsLocked ? LOCK_C : d.color;
   ctx.fillText(d.name + (s.level===2 ? ' MAX' : ''), x+2, y+13);
   return w;
 }
@@ -5727,8 +5777,9 @@ function playerDebuffed(){
   return false; // void: enemy buff, no player tint
 }
 function drawHUD(){
-  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,HUD_H);
+  ctx.fillStyle='#000'; ctx.fillRect(0,H-HUD_H,W,HUD_H); // (kyle 2026-10-14): BOTTOM HUD — bar at bottom, top opens up.
   // BOSS HEALTH BAR (polish): during boss fights, show each live boss's HP at the top of the arena.
+  // (kyle 2026-10-14): boss bars STAY at top (near the boss) — only the main HUD bar moved to the bottom.
   // No allocation (index loop, no filter) — cartridge rule.
   if (state===1 && bossSpawned){
     let _bi = 0;
@@ -5747,17 +5798,17 @@ function drawHUD(){
     }
   }
   ctx.strokeStyle='#888'; ctx.lineWidth=1; ctx.beginPath();
-  ctx.moveTo(0,HUD_H); ctx.lineTo(W,HUD_H); ctx.stroke();
+  ctx.moveTo(0,H-HUD_H); ctx.lineTo(W,H-HUD_H); ctx.stroke();
   ctx.font='bold 12px "Courier New",monospace'; ctx.textBaseline='alphabetic';
   ctx.fillStyle='#fff';
-  ctx.fillText('SCORE '+pad(score,6), 10, 20);
-  ctx.fillText(wave===31 ? 'FINAL' : 'LEVEL '+wave+'/30'+(ngp>0?' NG+'+ngp:''), 130, 20);
+  ctx.fillText('SCORE '+pad(score,6), 10, H-HUD_H+20);
+  ctx.fillText(wave===31 ? 'FINAL' : 'LEVEL '+wave+'/30'+(ngp>0?' NG+'+ngp:''), 130, H-HUD_H+20);
   ctx.fillStyle='#7dff4d';
-  ctx.fillText(levelMap?levelMap.name:'', 220, 20);
+  ctx.fillText(levelMap?levelMap.name:'', 220, H-HUD_H+20);
   ctx.fillStyle='gold';
-  ctx.fillText(endless ? ('GOLD '+goldKills) : ('GOLD '+goldKills+'/'+GOLD_TARGET), 330, 20);
-  if (redBananas){ ctx.fillStyle='red'; ctx.fillText('GUN MAX!', 445, 20); }
-  else { ctx.fillStyle='#fff'; ctx.fillText('GUN '+Math.round(gunLevel*100)+'%', 445, 20); }
+  ctx.fillText(endless ? ('GOLD '+goldKills) : ('GOLD '+goldKills+'/'+GOLD_TARGET), 330, H-HUD_H+20);
+  if (redBananas){ ctx.fillStyle='red'; ctx.fillText('GUN MAX!', 445, H-HUD_H+20); }
+  else { ctx.fillStyle='#fff'; ctx.fillText('GUN '+Math.round(gunLevel*100)+'%', 445, H-HUD_H+20); }
   ctx.font='bold 12px "Courier New",monospace'; ctx.textBaseline='alphabetic';
   const heartW = ctx.measureText('♥').width;
   const hpNow = Math.max(0, lives);
@@ -5766,18 +5817,18 @@ function drawHUD(){
   const heartsX = W - 10 - heartW*(showN + (frac>0.01 && full<14 ? 1 : 0));
   let hx = heartsX;
   ctx.fillStyle='red';
-  for (let i=0;i<showN;i++){ ctx.fillText('♥', hx, 20); hx += heartW; }
+  for (let i=0;i<showN;i++){ ctx.fillText('♥', hx, H-HUD_H+20); hx += heartW; }
   if (frac > 0.01 && full < 14){
     ctx.fillStyle = 'rgba(255,40,40,'+(0.25+0.65*frac).toFixed(2)+')';
-    ctx.fillText('♥', hx, 20); hx += heartW;
+    ctx.fillText('♥', hx, H-HUD_H+20); hx += heartW;
   }
-  if (full > 14){ ctx.fillStyle='#fff'; ctx.fillText('+'+(full-14), hx+2, 20); }
+  if (full > 14){ ctx.fillStyle='#fff'; ctx.fillText('+'+(full-14), hx+2, H-HUD_H+20); }
   // MOONFANG BLOOD BARRIER — barrier total shown after the hearts (cap = 2 x maxHP, so total effective HP = 3 x maxHP).
   if (bloodBarrier > 0){
     ctx.fillStyle = '#c81428';
     let bx = hx + 2;
     if (full > 14) bx += ctx.measureText('+' + (full-14)).width + 6;
-    ctx.fillText('B+' + (Math.round(bloodBarrier*10)/10), bx, 20);
+    ctx.fillText('B+' + (Math.round(bloodBarrier*10)/10), bx, H-HUD_H+20);
   }
   // SLICE A: Silence (Librarian signature) — HUD indicator with remaining seconds.
   if (silenceT > 0){ ctx.fillStyle='#c9b18a'; ctx.font='bold 12px "Courier New",monospace'; ctx.fillText('SILENCED ' + Math.ceil(silenceT/60) + 's', 10, 36); }
@@ -6736,6 +6787,10 @@ function drawWorld(){
       ctx.fillText('\u2591', doorPt.x+Math.cos(an)*(36+pl*6)-4, doorPt.y+Math.sin(an)*(36+pl*6)+4); }
     ctx.font='bold 11px "Courier New",monospace'; ctx.fillStyle='#7dff4d';
     ctx.fillText('DOOR', doorPt.x-18, doorPt.y-42);
+    // DOOR GRACE + CHARGE (kyle 2026-10-14): show the wait / charge so the player knows the door is not instant.
+    ctx.font='bold 10px "Courier New",monospace';
+    if (frame - doorSpawnFrame < 180){ ctx.fillStyle='#888'; ctx.fillText('OPENS IN ' + Math.ceil((180-(frame-doorSpawnFrame))/60) + 's', doorPt.x-30, doorPt.y+52); }
+    else if (doorCharge > 0){ ctx.fillStyle='#7dff4d'; ctx.fillText('ENTERING... ' + Math.round(doorCharge/45*100) + '%', doorPt.x-34, doorPt.y+52); }
   }
   // v14: Ash (or his note) waits mid-route
   if (ashPt && !ashGone){
@@ -6758,6 +6813,9 @@ function drawWorld(){
   if (!levelComplete) for (let i=floats.length-1;i>=0;i--){ // P5: one message layer
     const f = floats[i];
     ctx.fillStyle = f.c;
+    // TEXT FIT (kyle 2026-10-14): keep shouts on-screen — shrink to the space left/right of the float.
+    const fMaxW = Math.max(40, 2*Math.min(f.x-(camx+8), (camx+W-8)-f.x));
+    ctx.font = fitFont('bold 12px "Courier New",monospace', f.s, fMaxW);
     const fw = ctx.measureText(f.s).width;
     ctx.fillText(f.s, f.x-fw/2, f.y+(50-f.t)-i*16);
     f.t--;
@@ -7394,6 +7452,8 @@ function drawLevelComplete(){
     // Pick N items (kyle P4: boss loot pick 1 of 3). Unpicked are LOST.
     const pickWord = pickCount === 1 ? 'Pick ONE!' : 'Pick ' + pickCount + '!';
     centerText(levelComplete.isBossLoot ? 'BOSS LOOT - Pick ONE! (unpicked are LOST)' : pickWord + ' item(s) to keep:', 400,'bold 14px "Courier New",monospace', levelComplete.isBossLoot ? '#ff8c1a' : '#fff');
+    // CONFIRM-LOCK (kyle 2026-10-14): show the lockout while clicks are ignored.
+    if (typeof levelComplete.openedAt === 'number' && performance.now() - levelComplete.openedAt < 1000) centerText('GET READY...', 160, 'bold 16px "Courier New",monospace', '#ff3333');
     if (pickCount > 1) centerText('Picked ' + pickedArr.length + ' of ' + pickCount, 385,'bold 11px "Courier New",monospace','#37ff8b');
     levelComplete.items.forEach((it,i)=>{
       const x = levelCompleteItemX(i, levelComplete.items.length);
@@ -7403,7 +7463,7 @@ function drawLevelComplete(){
       ctx.strokeStyle = isPicked ? '#37ff8b' : (it.color||'#888'); ctx.lineWidth=2; ctx.strokeRect(x-w/2, 180, w, 140); ctx.lineWidth=1;
       drawItemArt(it, x, 280, 48);
       ctx.font='bold 14px "Courier New",monospace'; ctx.fillStyle=it.color; ctx.textBaseline='alphabetic'; // P5
-      const nm = it.name.toUpperCase().slice(0,20);
+      const nm = it.name.toUpperCase().slice(0,18);
       ctx.fillText(nm, x-ctx.measureText(nm).width/2, 240);
       ctx.fillStyle='#888'; ctx.font='12px "Courier New",monospace'; // P5
       ctx.fillText((it.rarity||'').toUpperCase(), x-ctx.measureText((it.rarity||'').toUpperCase()).width/2, 224);
@@ -7417,9 +7477,12 @@ function drawLevelComplete(){
       drawItemArt(f.item, f.x, f.y, 32);
     }
   } else {
-    centerText('You picked: '+pickedArr.map(p=>p.name).join(', '), 400,'bold 14px "Courier New",monospace','#37ff8b');
-    if (Math.floor(performance.now()/500)%2===0)
-      centerText('CLICK HERE to start next level', 300,'bold 16px "Courier New",monospace','#ffe14d');
+    centerText('You picked: '+pickedArr.map(p=>p.name).join(', '), 200,'bold 14px "Courier New",monospace','#37ff8b');
+    // CONFIRM button (kyle 2026-10-14): the ONLY way to close the loot screen.
+    ctx.fillStyle = '#1a3d1a'; ctx.fillRect(LOOT_CONFIRM_BTN.x, LOOT_CONFIRM_BTN.y, LOOT_CONFIRM_BTN.w, LOOT_CONFIRM_BTN.h);
+    ctx.strokeStyle = '#7dff4d'; ctx.lineWidth = 2; ctx.strokeRect(LOOT_CONFIRM_BTN.x, LOOT_CONFIRM_BTN.y, LOOT_CONFIRM_BTN.w, LOOT_CONFIRM_BTN.h);
+    ctx.fillStyle = '#7dff4d'; ctx.font = 'bold 16px "Courier New",monospace';
+    ctx.fillText('CONFIRM >>', LOOT_CONFIRM_BTN.x + 100 - ctx.measureText('CONFIRM >>').width/2, LOOT_CONFIRM_BTN.y + 26);
   }
 }
 function drawReward(){
@@ -7433,7 +7496,7 @@ function drawReward(){
     ctx.strokeStyle=it.color||'#888'; ctx.lineWidth=2; ctx.strokeRect(x-80, 180, 160, 140); ctx.lineWidth=1;
     drawItemArt(it, x, 280, 48);
     ctx.font='bold 11px "Courier New",monospace'; ctx.fillStyle=it.color; ctx.textBaseline='alphabetic';
-    const nm = it.name.toUpperCase().slice(0,20);
+    const nm = it.name.toUpperCase().slice(0,18);
     ctx.fillText(nm, x-ctx.measureText(nm).width/2, 240);
     ctx.fillStyle='#888'; ctx.font='10px "Courier New",monospace';
     ctx.fillText((it.rarity||'').toUpperCase(), x-ctx.measureText((it.rarity||'').toUpperCase()).width/2, 224);
@@ -7727,7 +7790,7 @@ function buyMystery(i){
   gems -= 75;
   mystery[i].bought = true;
   // Vendor NEVER sells mythic or set items (kyle) - those only drop from bosses/loot
-  const r = weightedPick({common:55, uncommon:28, rare:12, unique:5});
+  const r = weightedPick({common:58, uncommon:29, rare:8, unique:5}); // (kyle 2026-10-14): mystery-box rare 12%->8%.
   const pool = ITEM_POOL.filter(it=>it.rarity===r);
   const it = pick(pool);
   const added = stashAdd(starAtAcquisition(it)); // SLICE B: clone + star at acquisition
@@ -8580,10 +8643,17 @@ function update(){
       shout('THE BOSS AWAKENS!', bossPt.x, bossPt.y-90, 90, '#ff2222');
     }
   }
-  // v13: walk into the door to leave the level
-  if (doorPt && state===1 && Math.hypot(px-doorPt.x, py-doorPt.y) < 34){
-    doorPt = null;
-    state = 10; // intermission: door or lore
+  // DOOR (kyle 2026-10-14): 3s grace after spawn + 0.75s stand-still charge to enter.
+  // Grace is 3s (not 5s): frame freezes while the loot screen is open, so the post-pick
+  // gameplay frames (200 wait + 60 door-walk) must exceed it — and 3s of standing still
+  // after closing the loot screen is already a deliberate entry, not an accident.
+  // Before: touching the door instantly advanced — standing on the boss corpse at death
+  // sent you to the next level with no chance to clear adds / collect loot.
+  if (doorPt && state===1){
+    if (Math.hypot(px-doorPt.x, py-doorPt.y) < 34 && frame - doorSpawnFrame >= 180){
+      doorCharge++;
+      if (doorCharge >= 45){ doorPt = null; doorCharge = 0; state = 10; }
+    } else doorCharge = 0;
   }
   if (shieldT > 0) shieldT--;
   if (iceForm){
@@ -9762,6 +9832,7 @@ cv.addEventListener('click', (e) => {
           // the free item IS the reward. If no valid cheapest item, tutorial lock stays off (no soft-lock).
           markSeen('ps_seen_tut', 'level0_done');
           level0Step = -1; level0Highlight = null;
+          slots = [null, null]; // (kyle 2026-10-14): tutorial skills are training-only — cleared before the real run.
           rollShop(); state = 5; // Vendor (kyle: vendor after Level 0, same as all levels)
           wave0FreeIdx = cheapestShopIdx();
           wave0VendorTut = (wave0FreeIdx >= 0);
@@ -9782,16 +9853,16 @@ cv.addEventListener('click', (e) => {
           else if (s.action === 'dodge') level0Highlight = {x: px-60, y: py-60, w: 120, h: 120, label: 'KEEP MOVING!'};
           else if (s.action === 'lock'){
             // Spawn a skill drop
-            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: 'ice', t: 3600}); // 'ice' = FROST skill (kyle: fixed invalid 'frost' id)
+            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: tutorialStartSkill, t: 3600}); // random tutorial start skill (kyle 2026-10-14)
             level0Highlight = {x: px+60, y: py-20, w: 40, h: 40, label: 'RIGHT-CLICK TO LOCK!'};
           }
           else if (s.action === 'pickup') level0Highlight = {x: px+60, y: py-20, w: 40, h: 40, label: 'WALK OVER LOCKED SKILL!'};
           else if (s.action === 'combine'){
-            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: 'fire', t: 3600});
+            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: tutorialOtherSkill, t: 3600}); // random tutorial other skill (kyle 2026-10-14)
             level0Highlight = {x: px+60, y: py-20, w: 40, h: 40, label: 'LOCK A DIFFERENT SKILL!'};
           }
           else if (s.action === 'upgrade'){
-            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: 'ice', t: 3600}); // 'ice' = FROST skill (kyle: fixed invalid 'frost' id)
+            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: tutorialStartSkill, t: 3600}); // random tutorial start skill (kyle 2026-10-14)
             level0Highlight = {x: px+60, y: py-20, w: 40, h: 40, label: 'LOCK SAME SKILL AGAIN!'};
           }
           else if (s.action === 'item'){
@@ -9807,11 +9878,11 @@ cv.addEventListener('click', (e) => {
           else if (s.action === 'unlock'){
             // UNLOCK TO SWITCH: ensure unlocked, spawn 2 skills to practice switching
             skillsLocked = false;
-            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: 'fire', t: 3600});
+            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: tutorialOtherSkill, t: 3600}); // random tutorial other skill (kyle 2026-10-14)
             level0Highlight = {x: px+60, y: py-20, w: 40, h: 40, label: 'UNLOCKED - TOUCH TO SWITCH!'};
           }
           else if (s.action === 'dropshow'){
-            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: 'ice', t: 3600});
+            pickups.push({x: px+80, y: py, vx: 0, vy: 0, dropId: tutorialStartSkill, t: 3600}); // random tutorial start skill (kyle 2026-10-14)
             level0Highlight = {x: px+60, y: py-20, w: 40, h: 40, label: 'FLOATING SKILL!'};
           }
           else if (s.action === 'skillslots') level0Highlight = {x: 200, y: 28, w: 150, h: 40, label: 'DROPS SLOTS (TOP)'};
@@ -9863,11 +9934,13 @@ cv.addEventListener('click', (e) => {
         // Else use random rewards (for non-boss levels)
         const items = pendingBossLoot && pendingBossLoot.length > 0 ? pendingBossLoot : rollReward();
         pendingBossLoot = null; // Clear after use
-        levelComplete = { items: items, picked: [], pickCount: pendingPickCount || 1, isBossLoot: !!items }; // P4: pick 1 of 3 (boss loot).
+        levelComplete = { items: items, picked: [], pickCount: pendingPickCount || 1, isBossLoot: !!items, openedAt: performance.now() }; // (kyle 2026-10-14): confirm-lock — WALL-CLOCK (frame freezes while the screen is open, so a frame lockout would never expire). — clicks ignored ~1s after open. // P4: pick 1 of 3 (boss loot).
       }
       return; // Don't fire weapon during loot phase clicks
     }
     if (levelComplete){
+      // CONFIRM-LOCK (kyle 2026-10-14): ignore ALL clicks ~1s after the screen opens (firing spam must not pick/dismiss loot).
+      if (typeof levelComplete.openedAt === 'number' && performance.now() - levelComplete.openedAt < 1000) return;
       // Pick pickCount items (kyle P4: boss loot = pick 1 of 3. Unpicked LOST.)
       // The NOT picked are LOST (dropped) - only picked ones go to stash
       const pickCount = levelComplete.pickCount || 1;
@@ -9883,7 +9956,7 @@ cv.addEventListener('click', (e) => {
             pickFly.push({item: starAtAcquisition(it), x: x, y: 250, t: 0}); // SLICE B: clone + star at acquisition
           }
         });
-      } else if (mcy>=280 && mcy<=320){
+      } else if (inRect(mx, mcy, LOOT_CONFIRM_BTN)){ // CONFIRM button — the ONLY way to close the loot screen (kyle 2026-10-14).
         // Flush any still-flying picks (kyle: no item loss if player advances early).
         // stashAdd enforces the 6 cap - overflow drops to the ground, player picks it up after making room.
         pickFly.forEach(f => stashAdd(f.item)); pickFly = [];
