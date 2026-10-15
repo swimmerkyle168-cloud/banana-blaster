@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <title>PEA SLINGER -- ned and the hole with green gas</title>
 <style>
-  .bbw { box-sizing:border-box; max-width:680px; margin:0 auto; padding:12px;
+  .bbw { box-sizing:border-box; max-width:1320px; margin:0 auto; padding:12px; /* P6 (kyle 2026-10-14): display standard 1280x960. Logic stays 640x480; CSS scales 2x. Mouse math already scales via getBoundingClientRect. */
          background:#181818; border:1px solid #333; border-radius:12px;
          color:#eee; font-family:"Courier New",monospace; }
   .bbw h2 { margin:0 0 8px; text-align:center; letter-spacing:6px; color:#fff; }
   .bbw canvas { display:block; width:100%; height:auto; background:#000;
                 border:4px solid #444; border-radius:6px; cursor:crosshair;
                 image-rendering:pixelated; box-sizing:border-box; touch-action:none; }
-  .bbw p { max-width:640px; font-size:12px; color:#aaa; line-height:1.5; margin:8px 0 0; }
+  .bbw p { max-width:1280px; font-size:12px; color:#aaa; line-height:1.5; margin:8px 0 0; }
   .bbw b { color:#fff; }
 </style>
 </head>
@@ -22,6 +22,15 @@
 </div>
 
 <script>
+// ===== TABLE OF CONTENTS (S4 section banners; grep "SECTION:" to jump) =====
+//   SOUND — synthesized audio, bullet-hell discipline
+//   BANANA BLASTER v6 — core game
+//   LOOT & EQUIPMENT
+//   SLICE B: NG STARS
+//   SLICE B: NG VICTORY / PRIZE / REPLAY (state 12 = prize)
+//   SLICE C: NG SPEED / TELEGRAPH KNOBS
+//   SLICE C: AUTO-WEAPONS
+//   SAVE SYSTEM (3 slots)
 // ============================================================
 // SOUND — synthesized (Web Audio API), NO audio files.
 // Retro chiptune (ASCII/arcade identity). Bullet-hell discipline:
@@ -990,6 +999,7 @@ function genLevel(lv){
   dawnShieldUsed = false; // P6: Aegis of Dawn - once per wave
   levelStartFrame = frame;
   wave = lv;
+  if (lv === 1) wave1SkillDropped = false; // P2: reset tutorial-wave skill drop.
   // C1 (kyle): Wave 1 TUT layer DELETED. Wave 0 (Training) teaches everything; Wave 1 is real play.
   // tutorialStep stays 0, so the TUT draw/update blocks never run. Wave 1 uses normal spawning.
   // Players who skip the intro (and Wave 0) get the "Play Tutorial?" prompt from SKIP (see F1).
@@ -1167,6 +1177,7 @@ function buildLevelQueue(lv){
 }
 const DRIFT = 0.03;
 const DROP_CHANCE = 12, HEART_CHANCE = 5; // skill drops a bit more (kyle)
+let wave1SkillDropped = false; // P2 (kyle 2026-10-14): Wave 1 tutorial wave - exactly one add drops a guaranteed random skill.
 const MAX_STASH = 6; // 6-item run inventory (kyle: forces choices - equip, drop, sell, or leave)
 const MAX_PERSISTENT_STASH = 18; // persistent stash: 18 slots (6x3), holds all 18 set pieces
 
@@ -2292,6 +2303,7 @@ window.addEventListener('keydown', e => {
       else if (wave===1 && tutorialStep===7 && eq.some(i=>i)){ tutorialStep = 8; markSeen('ps_seen_tut', 'wave1'); }
     }
     else if (state === 6){ state = 1; }
+    else if (state === 14){ state = 8; } // Perma-stash ESC -> victory
   }
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
@@ -3185,6 +3197,7 @@ let burst = {x:-100, y:-100, t:0};
 let floats = [];
 function shout(s, x, y, t, c){ floats.push({s:s, x:x, y:y, t:t||50, c:c||'#fff'}); if (floats.length>4) floats.shift(); }
 function shoutF(f){ shout(f.s, f.x, f.y, f.t, f.c); }
+let lastBlockedShout = -9999; // FIX (kyle 2026-10-14): blocked-collect shouts (INVENTORY FULL / SET SKILLS) throttled to 1 per 120 frames. Before: collectDrop shouted EVERY frame while a blocked pickup sat on the player, so the warning flashed forever.
 let ouchT = 0;
 
 function resetGame(keep){
@@ -3194,6 +3207,7 @@ function resetGame(keep){
   frame=0; wave=0; wavePts=0; waveQueue=[]; waveBannerT=0; clearPause=0; bossName=''; lootPhase=null; monsterIntro=null; mapIntro=null; loreIntro=null; preLevelMonsterIntro=null; pendingMapIntro=null; pendingBossLoot=null; pendingPickCount=1; pendingNextWave=null; pickFly=[]; bossKilled=false; bossPickDone=false; finalBossLoot=[]; finalPick=[]; finalPickDone=false;
   phaseBanner = {t:0, s:'', sub:''};
   wave0VendorTut=false; wave0VendorClaimed=false; wave0FreeIdx=-1; // Wave 0 vendor tutorial reset
+  wave1SkillDropped = false; // P2: reset tutorial-wave skill drop.
   px=320; py=380; cool=0; chilled=0; zoneTick=0; charging=false; chargeT=0; playerDots=[]; playerFrozenT=0;
   killCount=0; windUsed=false; shieldT=0; invulnT=0; shopItems=[];
   bloodBarrier = 0; // MOONFANG BLOOD BARRIER: transient per-run resource, resets on new game / NG+ advance / replay.
@@ -3376,6 +3390,73 @@ function drawVictory(){
   const _vlines = runStatLines();
   ctx.font='bold 9px "Courier New",monospace';
   for (let i = 0; i < _vlines.length; i++){ ctx.fillStyle=_vlines[i].color; ctx.fillText(_vlines[i].text, 500, 56 + i*12); }
+}
+// ---- PERSISTENT STASH SCREEN (state 14, kyle 2026-10-14) ----
+// After finishing the game (victory), BEFORE starting NG / NG+: manage the persistent stash.
+// Run stash <-> persistent stash. DONE goes to the prize (ADVANCE) or replays NG++ (P3).
+// Equipped items stay in the prize pool (deposit/withdraw is run-stash only).
+let permaStashReturn = 'prize'; // 'prize' = ADVANCE -> prize screen; 'replay' = P3 -> REPLAY NG++
+let permaStashMsg = ''; let permaStashMsgT = 0;
+function openPermaStash(ret){ permaStashReturn = ret; permaStashMsg = ''; permaStashMsgT = 0; state = 14; }
+function permaStashLayout(){
+  const run = [];
+  stash.forEach((it, i) => { run.push({it:it, x:20 + (i%2)*140, y:80 + Math.floor(i/2)*48, w:130, h:40}); });
+  const pers = [];
+  persistentStash.forEach((it, i) => { pers.push({it:it, x:330 + (i%3)*104, y:80 + Math.floor(i/3)*40, w:98, h:34}); });
+  return {run:run, pers:pers,
+    done:{x:250, y:430, w:160, h:34},
+    back:{x:20, y:430, w:100, h:34}};
+}
+function drawPermaStash(){
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+  centerText('PERSISTENT STASH', 36,'bold 20px "Courier New",monospace','#37ff8b');
+  centerText('Survives across NG. Click a RUN item to DEPOSIT. Click a PERSISTENT item to WITHDRAW.', 56,'bold 11px "Courier New",monospace','#aaa');
+  ctx.font='bold 13px "Courier New",monospace'; ctx.fillStyle='#fff'; ctx.textAlign='left';
+  ctx.fillText('RUN STASH ('+stash.length+'/'+MAX_STASH+')', 20, 72);
+  ctx.fillText('PERSISTENT STASH ('+persistentStash.length+'/'+MAX_PERSISTENT_STASH+')', 330, 72);
+  const L = permaStashLayout();
+  if (!L.run.length){ ctx.font='11px "Courier New",monospace'; ctx.fillStyle='#888'; ctx.fillText('Run stash empty.', 20, 100); }
+  for (const c of L.run){
+    ctx.fillStyle='#1a1a1a'; ctx.fillRect(c.x, c.y, c.w, c.h);
+    ctx.strokeStyle=c.it.color||'#888'; ctx.strokeRect(c.x, c.y, c.w, c.h);
+    ctx.font='bold 12px "Courier New",monospace'; ctx.fillStyle=c.it.color||'#fff'; ctx.textAlign='left';
+    ctx.fillText((c.it.name||'').toUpperCase().slice(0,16), c.x+6, c.y+16);
+    ctx.font='10px "Courier New",monospace'; ctx.fillStyle='#aaa';
+    ctx.fillText(((c.it.rarity||'').toUpperCase())+(starStr(c.it)?' '+starStr(c.it):''), c.x+6, c.y+30);
+  }
+  if (!L.pers.length){ ctx.font='11px "Courier New",monospace'; ctx.fillStyle='#888'; ctx.fillText('Persistent stash empty.', 330, 100); }
+  for (const c of L.pers){
+    ctx.fillStyle='#1a1a1a'; ctx.fillRect(c.x, c.y, c.w, c.h);
+    ctx.strokeStyle=c.it.color||'#888'; ctx.strokeRect(c.x, c.y, c.w, c.h);
+    ctx.font='bold 11px "Courier New",monospace'; ctx.fillStyle=c.it.color||'#fff'; ctx.textAlign='left';
+    ctx.fillText((c.it.name||'').toUpperCase().slice(0,13), c.x+5, c.y+21);
+  }
+  // DONE / BACK
+  ctx.fillStyle='#37ff8b'; ctx.fillRect(L.done.x, L.done.y, L.done.w, L.done.h);
+  ctx.font='bold 13px "Courier New",monospace'; ctx.fillStyle='#000'; ctx.textAlign='center';
+  ctx.fillText(permaStashReturn==='prize' ? 'DONE -- TO PRIZE' : 'DONE -- REPLAY NG++', L.done.x+L.done.w/2, L.done.y+22);
+  ctx.fillStyle='#1a1a1a'; ctx.fillRect(L.back.x, L.back.y, L.back.w, L.back.h);
+  ctx.strokeStyle='#888'; ctx.strokeRect(L.back.x, L.back.y, L.back.w, L.back.h);
+  ctx.fillStyle='#fff'; ctx.fillText('BACK', L.back.x+L.back.w/2, L.back.y+22);
+  ctx.textAlign='left';
+  if (permaStashMsgT > 0){ permaStashMsgT--; ctx.font='bold 13px "Courier New",monospace'; ctx.fillStyle='#ff3333'; ctx.textAlign='center'; ctx.fillText(permaStashMsg, W/2, 412); ctx.textAlign='left'; }
+}
+function permaStashClick(mx, mcy){
+  const L = permaStashLayout();
+  if (inRect(mx, mcy, L.done)){ if (permaStashReturn==='prize') openPrize(); else startReplay(); return; }
+  if (inRect(mx, mcy, L.back)){ state = 8; return; }
+  for (const c of L.run){
+    if (inRect(mx, mcy, c)){
+      if (persistentStash.length >= MAX_PERSISTENT_STASH){ permaStashMsg = 'PERSISTENT STASH FULL!'; permaStashMsgT = 120; return; }
+      persistentStash.push(c.it); stash.splice(stash.indexOf(c.it), 1); snd(S => S.stash()); return;
+    }
+  }
+  for (const c of L.pers){
+    if (inRect(mx, mcy, c)){
+      if (stash.length >= MAX_STASH){ permaStashMsg = 'RUN STASH FULL!'; permaStashMsgT = 120; return; }
+      stash.push(c.it); persistentStash.splice(persistentStash.indexOf(c.it), 1); snd(S => S.stash()); return;
+    }
+  }
 }
 function openPrize(){
   snd(S => S.advance()); // SOUND: ADVANCE riser
@@ -3944,7 +4025,7 @@ function spawnZombie(type, fx, fy){
 // Bosses are randomized (any boss can appear on any wave), so a Wave 1 boss must be Wave 1-tough
 // and a Wave 30 boss must be Wave 30-tough. Wave 30 = max cap (wave 31 uses wave-30 values).
 // Phases (already implemented): waves 1-14 = 1 phase, 15-30 = 2 phases (at 50% HP), 31 = 3 phases (pip/pop at 66%/33%).
-function bossHPForWave(w){ const c = Math.min(Math.max(w,1), 30); return 20 + (c-1) * 5 + (c>12 ? (c-12) * 5 : 0); } // HYBRID RAMP (kyle): +5/wave to wave 12, then +10/wave. Wave 1 = 20, Wave 12 = 75, Wave 15 = 105, Wave 30 = 255 (cap)
+function bossHPForWave(w){ const c = Math.min(Math.max(w,1), 30); return (20 + (c-1) * 5 + (c>12 ? (c-12) * 5 : 0)) * 3; } // P3 x3 (kyle 2026-10-14, opt 1): HYBRID RAMP x3. Wave 1 = 60, Wave 12 = 225, Wave 15 = 315, Wave 30 = 765 (cap, before 0.9375 x tough). Spawned HP = this x 0.9375 x tough.
 function bossProjDmg(){ const c = Math.min(Math.max(wave,1), 30); return 1 + (c-1) * 0.05 + (c>12 ? (c-12) * 0.05 : 0); } // HYBRID RAMP (kyle): Wave 1 = 1.0, Wave 12 = 1.55, Wave 30 = 3.4 (cap)
 function bossContactDmg(){ const c = Math.min(Math.max(wave,1), 30); return 1.5 + (c-1) * 0.1 + (c>12 ? (c-12) * 0.1 : 0); } // HYBRID RAMP (kyle): Wave 1 = 1.5, Wave 12 = 2.6, Wave 30 = 6.3 (cap)
 function spawnBoss(bossId, cycle, sx, sy, isLevelBoss){
@@ -4832,9 +4913,9 @@ function projectileTheme(){
 }
 let muzzleFlash = null; // {x,y,t,color} - attack animation flash at muzzle when firing
 // ---- P5: COMBAT PRIMER (kyle) - PLAY runs a ~60s primer on FIRST play, skippable on replays. ----
-// Teaches: move, shoot, pick up one drop skill, hit one weak enemy. Ends when all 4 are done or 60s pass.
+// Teaches: move, shoot, pick up one drop skill, hit one weak enemy. Ends when all 4 are done (NO TIMER, kyle 2026-10-14 P1 opt 1).
 let primer = {active:false, t:0, startX:0, startY:0, done:{move:false, shoot:false, skill:false, hit:false}};
-const PRIMER_TIME = 3600; // 60s at 60fps
+// P1 (kyle 2026-10-14, opt 1): NO primer timer - ends only when all 4 steps are done. ESC / SKIP still exit.
 const PRIMER_SKIP_BTN = {x:470, y:10, w:160, h:28};
 function startPrimer(){
   resetGame();
@@ -4885,9 +4966,8 @@ function drawPrimer(){
     ctx.fillStyle = '#37ff8b'; ctx.font = 'bold 13px "Courier New",monospace';
     ctx.fillText('ALL DONE!', 20, 72);
   }
-  const secsLeft = Math.max(0, Math.ceil((PRIMER_TIME - primer.t) / 60));
   ctx.fillStyle = '#ff8c1a';
-  ctx.fillText('TIME: ' + secsLeft + 's  |  ESC = SKIP', 20, 114);
+  ctx.fillText('FINISH ALL 4 STEPS TO CONTINUE  |  ESC = SKIP', 20, 114);
   // SKIP button
   ctx.fillStyle = '#1a3a1a'; ctx.fillRect(PRIMER_SKIP_BTN.x, PRIMER_SKIP_BTN.y, PRIMER_SKIP_BTN.w, PRIMER_SKIP_BTN.h);
   ctx.strokeStyle = '#37ff8b'; ctx.strokeRect(PRIMER_SKIP_BTN.x, PRIMER_SKIP_BTN.y, PRIMER_SKIP_BTN.w, PRIMER_SKIP_BTN.h);
@@ -5225,8 +5305,8 @@ function killZombie(z, cause){
         finalBossLoot.push(...deduped);
       } else {
         pendingBossLoot = deduped.slice(0, targetCount);
-        // kyle: boss loot = KEEP ALL (not pick 1 of 3 / pick 2 of 4). Player takes every boss drop.
-        pendingPickCount = pendingBossLoot.length;
+        // P4 (kyle 2026-10-14, opt 1): boss loot = PICK 1 of 3. Unpicked are LOST. Reverses keep-all. Final boss stays pick 2 (state 13).
+        pendingPickCount = 1;
         // If boss drops fewer than target, fill with random rewards (so player always has full choices).
         // Dedupe by ID; retry up to 50 times (was: one pass then break, could leave the loot short).
         let fillTries = 0;
@@ -5236,7 +5316,7 @@ function killZombie(z, cause){
             if (pendingBossLoot.length < targetCount && it && !seenIds.has(it.id)) { seenIds.add(it.id); pendingBossLoot.push(it); }
           }
         }
-        pendingPickCount = pendingBossLoot.length; // kyle: keep-all - pickCount tracks the filled loot
+        pendingPickCount = 1; // P4: pick 1 of 3.
         // SOUND: boss loot drop — one sound, highest rarity wins (debounced in Snd.drop).
         for (const _li of pendingBossLoot) snd(S => S.drop(dropSoundTier(_li)));
       }
@@ -5269,7 +5349,12 @@ function killZombie(z, cause){
     // spawnPickup(null) picks uniformly from all 8 DROPS - no type restriction, no weighting.
     // ITEM / SKILL drops: own % (kyle: untouched - heart, skill, stale table as-is).
     const heartC = HEART_CHANCE + 3*mods.medic;
-    const dropC = DROP_CHANCE + 5*harm(mods.lucky) + (gear.lucky||0); // STACKING: lucky harmonic
+    // P2 (kyle 2026-10-14, tutorial Wave 1 only): exactly ONE add drops a guaranteed random skill.
+    // First non-boss kill in Wave 1 drops a skill (spawnPickup(null) = uniform random from 8 DROPS).
+    // After that, Wave 1 adds never drop skills (dropC = 0). Hearts/currency unchanged.
+    let dropC = DROP_CHANCE + 5*harm(mods.lucky) + (gear.lucky||0); // STACKING: lucky harmonic
+    if (wave === 1 && !z.boss && !wave1SkillDropped){ spawnPickup(z.x, z.y, null); wave1SkillDropped = true; dropC = 0; }
+    else if (wave === 1 && !z.boss){ dropC = 0; }
     // kyle: DEFAULT = currency. Unlucky 4% STALE roll drops nothing.
     const STALE_CHANCE = 4;
     const roll = Math.random()*100;
@@ -5501,7 +5586,7 @@ function collectDrop(p){
   if (p.dropId === 'loot'){
     // 6-item inventory (kyle): if stash full, DON'T pick up. Player must make room.
     if (stash.length >= MAX_STASH){
-      shoutF({x:p.x, y:p.y, t:90, s:'INVENTORY FULL (6/6)! Equip, drop, or sell first!', c:'#ff3333'});
+      if (frame - lastBlockedShout > 120){ shoutF({x:p.x, y:p.y, t:90, s:'INVENTORY FULL (6/6)! Equip, drop, or sell first!', c:'#ff3333'}); lastBlockedShout = frame; }
       return false; // Don't remove pickup - it stays on ground
     }
     // SLICE B: clone + star at acquisition (templates must never be mutated; NG finds are starred).
@@ -5534,7 +5619,7 @@ function collectDrop(p){
   }
   // SET SKILLS: drop skills CANNOT be picked up while set skills active (kyle: "lock drop skills")
   if (activeSetSkills){
-    shoutF({x:p.x, y:p.y, t:60, s:'SET SKILLS ACTIVE - CANNOT PICK UP DROPS!'});
+    if (frame - lastBlockedShout > 120){ shoutF({x:p.x, y:p.y, t:60, s:'SET SKILLS ACTIVE - CANNOT PICK UP DROPS!'}); lastBlockedShout = frame; }
     return false;
   }
   const si = slots.findIndex(s => s && s.id === d.id);
@@ -5655,7 +5740,7 @@ function drawHUD(){
       ctx.fillStyle='#111'; ctx.fillRect(_x, _y, _w, 8);
       ctx.fillStyle = bz.color || '#ff2222'; ctx.fillRect(_x, _y, _w*_frac, 8);
       ctx.strokeStyle='#888'; ctx.lineWidth=1; ctx.strokeRect(_x, _y, _w, 8);
-      ctx.font='bold 8px "Courier New",monospace'; ctx.fillStyle='#fff';
+      ctx.font='bold 11px "Courier New",monospace'; ctx.fillStyle='#fff'; // P5
       ctx.fillText((bz.name || 'BOSS'), 10, _y+7);
       ctx.fillText(Math.ceil(Math.max(0,bz.hp)) + '/' + Math.ceil(bz.maxhp||0), _x+_w+6, _y+7);
       _bi++;
@@ -5700,7 +5785,7 @@ function drawHUD(){
   const _deb = terrainDebuff();
   if (_deb){ ctx.fillStyle=_deb.color; ctx.font='bold 11px "Courier New",monospace'; ctx.fillText(_deb.icon + ' DEBUFF: ' + _deb.label, 170, 36); }
   // HUD row 2: centered DROPS, then GEAR + 3 equipped slots
-  ctx.font='bold 10px "Courier New",monospace'; ctx.fillStyle='#888'; ctx.textBaseline='alphabetic';
+  ctx.font='bold 12px "Courier New",monospace'; ctx.fillStyle='#888'; ctx.textBaseline='alphabetic'; // P5
   const rowW = 46 + 2*58 + 24 + 40 + 3*58;
   let sx = Math.round((W-rowW)/2);
   ctx.fillText('DROPS', sx, 48); sx += 46;
@@ -5862,6 +5947,7 @@ function drawAsciiRing(x, y, r, seed){
   ctx.drawImage(cv, Math.round(x - cv.width/2), Math.round(y - cv.height/2));
 }
 function drawWorld(){
+  // P5 (kyle 2026-10-14): one message layer - when the pick screen is open, floats/banners stay hidden behind it.
   const t = performance.now();
   const _frameNow = t; // reuse for all per-frame timing (perf)
   // ASCII visual-monitor terrain (pre-rendered per level)
@@ -6669,7 +6755,7 @@ function drawWorld(){
     }
   }
   ctx.font='bold 12px "Courier New",monospace'; ctx.textBaseline='alphabetic';
-  for (let i=floats.length-1;i>=0;i--){
+  if (!levelComplete) for (let i=floats.length-1;i>=0;i--){ // P5: one message layer
     const f = floats[i];
     ctx.fillStyle = f.c;
     const fw = ctx.measureText(f.s).width;
@@ -7305,9 +7391,9 @@ function drawLevelComplete(){
   const pickedArr = levelComplete.picked || [];
   const pickCount = levelComplete.pickCount || 1;
   if (pickedArr.length < pickCount){
-    // Pick N items (kyle: pick 1 of 3 for waves 1-9, pick 2 of 4 for waves 10+). Unpicked are LOST.
+    // Pick N items (kyle P4: boss loot pick 1 of 3). Unpicked are LOST.
     const pickWord = pickCount === 1 ? 'Pick ONE!' : 'Pick ' + pickCount + '!';
-    centerText(levelComplete.isBossLoot ? 'BOSS LOOT - Take ALL! (Click any card)' : pickWord + ' item(s) to keep:', 400,'bold 14px "Courier New",monospace', levelComplete.isBossLoot ? '#ff8c1a' : '#fff');
+    centerText(levelComplete.isBossLoot ? 'BOSS LOOT - Pick ONE! (unpicked are LOST)' : pickWord + ' item(s) to keep:', 400,'bold 14px "Courier New",monospace', levelComplete.isBossLoot ? '#ff8c1a' : '#fff');
     if (pickCount > 1) centerText('Picked ' + pickedArr.length + ' of ' + pickCount, 385,'bold 11px "Courier New",monospace','#37ff8b');
     levelComplete.items.forEach((it,i)=>{
       const x = levelCompleteItemX(i, levelComplete.items.length);
@@ -7316,10 +7402,10 @@ function drawLevelComplete(){
       ctx.fillStyle = isPicked ? '#1a2a1a' : '#0a120a'; ctx.fillRect(x-w/2, 180, w, 140);
       ctx.strokeStyle = isPicked ? '#37ff8b' : (it.color||'#888'); ctx.lineWidth=2; ctx.strokeRect(x-w/2, 180, w, 140); ctx.lineWidth=1;
       drawItemArt(it, x, 280, 48);
-      ctx.font='bold 11px "Courier New",monospace'; ctx.fillStyle=it.color; ctx.textBaseline='alphabetic';
+      ctx.font='bold 14px "Courier New",monospace'; ctx.fillStyle=it.color; ctx.textBaseline='alphabetic'; // P5
       const nm = it.name.toUpperCase().slice(0,20);
       ctx.fillText(nm, x-ctx.measureText(nm).width/2, 240);
-      ctx.fillStyle='#888'; ctx.font='10px "Courier New",monospace';
+      ctx.fillStyle='#888'; ctx.font='12px "Courier New",monospace'; // P5
       ctx.fillText((it.rarity||'').toUpperCase(), x-ctx.measureText((it.rarity||'').toUpperCase()).width/2, 224);
       // SLICE B: stars on the card (gold, rewarding to see).
       if (it.stars > 0){ const ss = starStr(it); ctx.fillStyle='#ffe14d'; ctx.font='bold 12px "Courier New",monospace'; ctx.fillText(ss, x-ctx.measureText(ss).width/2, 210); }
@@ -7681,7 +7767,7 @@ function drawShopCard(it, r){
   const sprCv = fxCv(sprName, it.color);
   const sprH = 20;
   ctx.drawImage(sprCv, r.x+4, r.y+3, sprCv.width*sprH/sprCv.height, sprH);
-  ctx.font='bold 9px "Courier New",monospace';
+  ctx.font='bold 12px "Courier New",monospace'; // P5: vendor readable (was 9px)
   ctx.fillStyle = maxed ? '#777' : '#fff';
   let label = (owned>0&&!maxed?'x'+owned+' ':'')+(maxed?'[MAX] ':'')+it.name+' -- '+it.desc;
   ctx.fillText(label.slice(0,52), r.x+28, r.y+12);
@@ -7690,13 +7776,13 @@ function drawShopCard(it, r){
   ctx.fillText(ct, r.x+r.w-ctx.measureText(ct).width-10, r.y+18);
   // kyle: modifiers = PERMANENT (until end of game), skill slots = drop skill (temporary)
   if (it.kind==='skill'){
-    ctx.font='bold 8px "Courier New",monospace'; ctx.fillStyle='#22e6ff';
+    ctx.font='bold 10px "Courier New",monospace'; ctx.fillStyle='#22e6ff';
     ctx.fillText('SKILL DROP', r.x+28, r.y+23);
   } else if (it.id==='backup'){
-    ctx.font='bold 8px "Courier New",monospace'; ctx.fillStyle='#22e6ff';
+    ctx.font='bold 10px "Courier New",monospace'; ctx.fillStyle='#22e6ff';
     ctx.fillText('SKILL DROP', r.x+28, r.y+23);
   } else {
-    ctx.font='bold 8px "Courier New",monospace'; ctx.fillStyle='#37ff8b';
+    ctx.font='bold 10px "Courier New",monospace'; ctx.fillStyle='#37ff8b';
     ctx.fillText('PERMANENT', r.x+28, r.y+23);
   }
 }
@@ -7708,20 +7794,20 @@ function drawMysteryCard(i, r){
   ctx.font='bold 14px "Courier New",monospace'; ctx.textBaseline='alphabetic';
   ctx.fillStyle = m.bought ? '#555' : '#ff3df2';
   ctx.fillText('?', r.x+10, r.y+18);
-  ctx.font='bold 9px "Courier New",monospace'; ctx.fillStyle = m.bought?'#777':'#fff';
+  ctx.font='bold 12px "Courier New",monospace'; ctx.fillStyle = m.bought?'#777':'#fff';
   ctx.fillText('EQUIPMENT -- random gear (swappable)', r.x+30, r.y+12);
   ctx.fillStyle = m.bought ? '#777' : (gems>=75?'gold':'#a33');
   const mc = m.bought?'SOLD':'75 G';
   ctx.fillText(mc, r.x+r.w-ctx.measureText(mc).width-10, r.y+18);
   // Equipment is swappable, NOT permanent (kyle)
-  ctx.font='bold 8px "Courier New",monospace'; ctx.fillStyle='#888';
+  ctx.font='bold 10px "Courier New",monospace'; ctx.fillStyle='#888';
   ctx.fillText('SWAPPABLE', r.x+30, r.y+23);
 }
 function drawWaveClear(){
   ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
   centerText('LEVEL '+wave+' CLEAR!', 22,'bold 20px "Courier New",monospace','#37ff8b');
-  centerText('BONUS +'+(wave*50)+' PTS   +'+Math.round(wave*5*(levelMap?levelMap.gemsMul:1))+' GEMS', 36,'bold 11px "Courier New",monospace','gold');
-  centerText('SCORE '+pad(score,6)+'      GEMS '+gems, 50,'bold 11px "Courier New",monospace','#fff');
+  centerText('BONUS +'+(wave*50)+' PTS   +'+Math.round(wave*5*(levelMap?levelMap.gemsMul:1))+' GEMS', 36,'bold 13px "Courier New",monospace','gold'); // P5
+  centerText('SCORE '+pad(score,6)+'      GEMS '+gems, 50,'bold 13px "Courier New",monospace','#fff'); // P5
   // v14: VEK'S WARES -- the vendor, and his slips
   drawDense('vek', 40, 458, 36);
   if (Math.floor(performance.now()/3000)%2===0){ // his eyes flash green. sometimes.
@@ -7741,10 +7827,10 @@ function drawWaveClear(){
     : nw>31 ? 'NEXT: ENDLESS LEVEL '+nw
     : 'NEXT: LEVEL '+nw+' / 30';
   centerText(nextLabel, nb.y+17,'bold 10px "Courier New",monospace', nw>=31 ? '#ff2222' : '#fff');
-  centerText('-- VENDOR -- click a row to buy', 386,'bold 10px "Courier New",monospace','#22e6ff');
+  centerText('-- VENDOR -- click a row to buy', 386,'bold 13px "Courier New",monospace','#22e6ff'); // P5
   centerText('GOLD: '+gems+'  (vendor takes gold)', 404,'bold 14px "Courier New",monospace','#ffe14d');
   // Vendor: exactly 10 items, ALL visible, NO pagination (kyle: 8 slots + 2 equipment)
-  centerText('8 SLOTS -- DROP SKILLS + PERMANENT ABILITIES', 108,'bold 11px "Courier New",monospace','#888');
+  centerText('8 SLOTS -- DROP SKILLS + PERMANENT ABILITIES', 108,'bold 13px "Courier New",monospace','#888'); // P5
   for (let i=0;i<8;i++){
     const it = shopItems[i];
     if (it) drawShopCard(it, SHOP_CARDS[i]);
@@ -7779,8 +7865,8 @@ function drawTooltip(){
   // Drawn last so it's on top. Follows mouse, clamped to screen.
   if (!hoverTooltip) return;
   if (!Array.isArray(hoverTooltip.lines)) return; // guard: set-skill tooltips once returned a bare array
-  const pad = 8, lineH = 14;
-  ctx.font = 'bold 11px "Courier New",monospace';
+  const pad = 8, lineH = 17; // P5: tooltip readable (was 14)
+  ctx.font = 'bold 13px "Courier New",monospace';
   let maxW = 0;
   for (const l of hoverTooltip.lines){
     const w = ctx.measureText(l.text).width;
@@ -7798,9 +7884,9 @@ function drawTooltip(){
   if (by < 0) by = 0;
   ctx.fillStyle = 'rgba(10,10,10,0.95)'; ctx.fillRect(bx, by, boxW, boxH);
   ctx.strokeStyle = '#37ff8b'; ctx.lineWidth = 1; ctx.strokeRect(bx, by, boxW, boxH);
-  ctx.fillStyle = '#ffe14d'; ctx.font = 'bold 12px "Courier New",monospace'; ctx.textAlign = 'left';
+  ctx.fillStyle = '#ffe14d'; ctx.font = 'bold 14px "Courier New",monospace'; ctx.textAlign = 'left';
   ctx.fillText(hoverTooltip.title, bx + pad, by + pad + 12);
-  ctx.font = '11px "Courier New",monospace';
+  ctx.font = '13px "Courier New",monospace'; // P5
   hoverTooltip.lines.forEach((l, i) => {
     ctx.fillStyle = l.color || '#ccc';
     ctx.fillText(l.text, bx + pad, by + pad + 12 + (i+1)*lineH);
@@ -8286,11 +8372,11 @@ function update(){
     // SLICE C: auto-weapons (equipped items attack on their own timers) + shield bubble CD.
     tickAutoWeapons();
   }
-  // P5: primer - track movement, timer, auto-end (all done OR 60s).
+  // P5: primer - track movement, end on all done (no timer, P1).
   if (primer.active){
     if (!primer.done.move && (Math.abs(px - primer.startX) > 20 || Math.abs(py - primer.startY) > 20)) primer.done.move = true;
     primer.t++;
-    if (primerAllDone() || primer.t >= PRIMER_TIME){ endPrimer(); return; }
+    if (primerAllDone()){ endPrimer(); return; } // P1: no timeout - finish once everything is taught
   }
   // kyle: picked loot cards fly to player (Problem 2 Option 2) - lerp to player screen pos, stash on arrival
   for (let i=pickFly.length-1; i>=0; i--){
@@ -9352,24 +9438,21 @@ function update(){
       if (p.y > PLAY.y1 - 10){ p.y = PLAY.y1 - 10; p.vy = -Math.abs(p.vy || 0.5); }
       // MAGNET AoE around hero (kyle: "small AoE around hero that acts like magnet pulling drop skills in")
       // 120px radius, gentle pull (1.2 px/frame). If LOCKED, skills hover at 40px (pulled in but NOT picked up).
-      const MAGNET_R = 120, MAGNET_PULL = 1.2, HOVER_R = 40;
+      const MAGNET_R = 120, MAGNET_PULL = 1.2;
+      // FIX (kyle 2026-10-14): magnet pulls ALL drop skills to CONTACT (locked or not).
+      // The caught handler decides: unlocked = pick up, locked = DISAPPEAR.
+      // The old 40px hover ring pushed locked skills back out, but PICKUP_RADIUS is 26,
+      // so locked skills could NEVER touch the player and hovered forever, never vanishing.
       if (mdist < MAGNET_R && mdist > 1){
-        if (skillsLocked && mdist < HOVER_R){
-          // Locked: hover at 40px ring - pulled in but not collected (combo safe, skills visible nearby)
-          // Push back out gently if too close
-          p.x -= (mdx/mdist)*1.0; p.y -= (mdy/mdist)*1.0;
-        } else if (mdist > HOVER_R || !skillsLocked){
-          // Unlocked: pull all the way in (will be picked up on contact)
-          // Locked: pull to hover ring, then stop
-          if (!skillsLocked || mdist > HOVER_R){
-            p.x += (mdx/mdist)*MAGNET_PULL; p.y += (mdy/mdist)*MAGNET_PULL;
-          }
-        }
+        p.x += (mdx/mdist)*MAGNET_PULL; p.y += (mdy/mdist)*MAGNET_PULL;
       }
     } else if (p.dropId === 'loot'){
       // EQUIPMENT: fly RIGHT to player from ANYWHERE (kyle: "any equipment drop must go right to the user")
       // Player SEES the item fly to them and get picked up. Fast magnet, no radius limit.
-      if (mdist > 1){
+      // FIX (kyle 2026-10-14): when the stash is FULL, loot does NOT fly onto the player
+      // (it sat on the player re-triggering the INVENTORY FULL warning every frame).
+      // It stays where it dropped until the player makes room, then flies in.
+      if (mdist > 1 && stash.length < MAX_STASH){
         const lootSpd = 6; // Fast - visible flight to player
         p.x += (mdx/mdist)*lootSpd; p.y += (mdy/mdist)*lootSpd;
       }
@@ -9546,7 +9629,7 @@ function loop(){
   try{
   if (state===0) drawTitle();
   else if (state===4) drawCard();
-  else if (state===1){ if (!talk && !rewardItems && !levelComplete && !terrainIntro && !mapIntro && !monsterIntro && !comboGuide && !loreIntro && !preLevelMonsterIntro && level0Step < 0 && !paused) update(); drawWorld(); drawPrimer(); drawBanner(); if (rewardItems) drawReward(); if (levelComplete) drawLevelComplete(); if (terrainIntro) drawTerrainIntro(); if (loreIntro) drawLoreIntro(); if (mapIntro) drawMapIntro(); if (preLevelMonsterIntro) drawPreLevelMonsterIntro(); if (monsterIntro) { /* monster card drawn in drawWorld */ } if (lootPhase) drawLootPhase(); if (comboGuide) drawComboGuide(); if (level0Step >= 0) drawLevel0(); drawTooltip(); }
+  else if (state===1){ if (!talk && !rewardItems && !levelComplete && !terrainIntro && !mapIntro && !monsterIntro && !comboGuide && !loreIntro && !preLevelMonsterIntro && level0Step < 0 && !paused) update(); drawWorld(); drawPrimer(); if (!levelComplete) drawBanner(); /* P5: one message layer */ if (rewardItems) drawReward(); if (levelComplete) drawLevelComplete(); if (terrainIntro) drawTerrainIntro(); if (loreIntro) drawLoreIntro(); if (mapIntro) drawMapIntro(); if (preLevelMonsterIntro) drawPreLevelMonsterIntro(); if (monsterIntro) { /* monster card drawn in drawWorld */ } if (lootPhase) drawLootPhase(); if (comboGuide) drawComboGuide(); if (level0Step >= 0) drawLevel0(); drawTooltip(); }
   else if (state===2) drawClear();
   else if (state===3) drawOver();
   else if (state===5) drawWaveClear();
@@ -9554,6 +9637,7 @@ function loop(){
   else if (state===7) drawIntro();
   else if (state===8) drawVictory();
   else if (state===12) drawPrize(); // SLICE B: NG prize screen
+  else if (state===14) drawPermaStash(); // Perma-stash screen (victory -> NG, kyle 2026-10-14)
   else if (state===13) drawFinalPick(); // Final-boss pick-2 screen
   else if (state===9) drawHow();
   else if (state===10) drawInter();
@@ -9633,15 +9717,16 @@ cv.addEventListener('click', (e) => {
     if (inRect(mx,mcy,VICTORY_EXPORT_BTN)){ exportMetrics(); return; }
     // SLICE B: P3 finish -> replay only (no prize). P1/P2 -> ADVANCE (prize) / REPLAY / END.
     if (ngp >= 2){
-      if (inRect(mx,mcy,VICTORY_ADV_BTN)) startReplay();
+      if (inRect(mx,mcy,VICTORY_ADV_BTN)) openPermaStash('replay'); // P3: perma stash before REPLAY NG++
       else if (inRect(mx,mcy,VICTORY_REPLAY_BTN)) state=0;
     } else {
-      if (inRect(mx,mcy,VICTORY_ADV_BTN)) openPrize();
+      if (inRect(mx,mcy,VICTORY_ADV_BTN)) openPermaStash('prize'); // ADVANCE: perma stash BEFORE prize (kyle 2026-10-14)
       else if (inRect(mx,mcy,VICTORY_REPLAY_BTN)) startReplay();
       else if (inRect(mx,mcy,VICTORY_END_BTN)) state=0;
     }
   }
   else if (state===12){ prizeClick(mx, mcy); } // SLICE B: NG prize screen clicks
+  else if (state===14){ permaStashClick(mx, mcy); } // Perma-stash screen clicks
   else if (state===13){ finalPickClick(mx, mcy); } // Final-boss pick-2 clicks
   else if (state===4){ resetGame(); startNextWave(); state=1; }
   else if (state===1){
@@ -9778,37 +9863,24 @@ cv.addEventListener('click', (e) => {
         // Else use random rewards (for non-boss levels)
         const items = pendingBossLoot && pendingBossLoot.length > 0 ? pendingBossLoot : rollReward();
         pendingBossLoot = null; // Clear after use
-        levelComplete = { items: items, picked: [], pickCount: pendingPickCount || 1, isBossLoot: !!items }; // kyle: pick 1 (waves 1-9) or pick 2 (waves 10+)
+        levelComplete = { items: items, picked: [], pickCount: pendingPickCount || 1, isBossLoot: !!items }; // P4: pick 1 of 3 (boss loot).
       }
       return; // Don't fire weapon during loot phase clicks
     }
     if (levelComplete){
-      // Pick pickCount items (kyle: pick 1 of 3 for waves 1-9, pick 2 of 4 for waves 10+)
+      // Pick pickCount items (kyle P4: boss loot = pick 1 of 3. Unpicked LOST.)
       // The NOT picked are LOST (dropped) - only picked ones go to stash
       const pickCount = levelComplete.pickCount || 1;
       if (!levelComplete.picked) levelComplete.picked = [];
       if (levelComplete.picked.length < pickCount){
-        // kyle: BOSS LOOT = KEEP ALL - one click on ANY card takes every boss drop (not one-by-one).
-        // Non-boss rewards still pick one-by-one (pickCount < items.length).
-        const takeAll = levelComplete.isBossLoot;
+        // P4: no keep-all - one click = ONE card. Unpicked are LOST.
         levelComplete.items.forEach((it,i)=>{
           const x = levelCompleteItemX(i, levelComplete.items.length);
           const w = levelCompleteItemW(levelComplete.items.length);
           if (mcy>=180 && mcy<=320 && mx>=x-w/2 && mx<=x+w/2 && !levelComplete.picked.includes(it)){
-            if (takeAll){
-              // Take every unpicked boss item in one click.
-              levelComplete.items.forEach((it2,j)=>{
-                if (!levelComplete.picked.includes(it2)){
-                  levelComplete.picked.push(it2);
-                  const x2 = levelCompleteItemX(j, levelComplete.items.length);
-                  pickFly.push({item: starAtAcquisition(it2), x: x2, y: 250, t: 0}); // SLICE B: clone + star at acquisition
-                }
-              });
-            } else {
-              // kyle: picked card FLIES to player (Option 2) - stash on arrival, not instantly
-              levelComplete.picked.push(it);
-              pickFly.push({item: starAtAcquisition(it), x: x, y: 250, t: 0}); // SLICE B: clone + star at acquisition
-            }
+            // P4: picked card FLIES to player - stash on arrival, not instantly. Unpicked are LOST.
+            levelComplete.picked.push(it);
+            pickFly.push({item: starAtAcquisition(it), x: x, y: 250, t: 0}); // SLICE B: clone + star at acquisition
           }
         });
       } else if (mcy>=280 && mcy<=320){
